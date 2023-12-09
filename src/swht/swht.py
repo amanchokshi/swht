@@ -169,6 +169,10 @@ class UVFITS:
             # Gets rid of extra data axes?
             data = np.squeeze(self.data.data)
 
+            # Deal with edge case where there is only one fine freq channel
+            if len(data.shape) == 3:
+                data = data[:, np.newaxis, :, :]
+
             # TODO: double check crosspols
             self.XX = data[:, :, 0, 0] + 1j * data[:, :, 0, 1]
             self.YY = data[:, :, 1, 0] + 1j * data[:, :, 1, 1]
