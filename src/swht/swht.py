@@ -11,13 +11,19 @@ https://ui.adsabs.harvard.edu/abs/2015MNRAS.451L...6C/abstract
 import logging
 from pathlib import Path
 
-
 import numpy as np
+import healpy as hp
+from tqdm import tqdm
 from scipy import special
 from astropy.io import fits
+from astropy import units as u
 from astropy import constants as consts
-from astropy.coordinates import CartesianRepresentation
+from astropy import coordinates as coord
 
+import cmasher as cmr
+from matplotlib import pyplot as plt
+
+plt.style.use("dark_background")
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -133,7 +139,7 @@ class UVFITS:
 
             freqs = cent_freq + (np.arange(num_freqs) - cent_pix) * freq_res
 
-            self.freqs = freqs
+            self.freqs = freqs * u.Hz
 
         except AttributeError:
             logger.exception("AttributeError")
@@ -149,6 +155,31 @@ class UVFITS:
             self.uu = self.data["UU"] * consts.c.value
             self.vv = self.data["VV"] * consts.c.value
             self.ww = self.data["WW"] * consts.c.value
+
+        except AttributeError:
+            logger.exception("AttributeError")
+
+        except Exception:
+            logger.exception("Maybe a different data structure")
+
+    def uvw_spherical(self):
+        """Convert cartesian uvw coords to spherical"""
+
+        logger.info("Converting UVW coordinates from cartesian to spherical")
+        try:
+            uvw = coord.CartesianRepresentation(
+                x=self.uu, y=self.vv, z=self.ww, unit=u.meter
+            )
+
+            sph_uvw = uvw.represent_as(coord.SphericalRepresentation)
+            # Radial distance (0 <= r <= ∞] [m]
+            self.r = sph_uvw.distance
+
+            # Elevation angle (0 <= θ <= π] [rad]
+            self.theta = sph_uvw.lat + np.pi/2*u.rad
+
+            # Azimuthal angle (0 <= ɸ <= 2π] [rad]
+            self.phi = sph_uvw.lon
 
         except AttributeError:
             logger.exception("AttributeError")
@@ -190,24 +221,104 @@ class UVFITS:
         except Exception:
             logger.exception("Maybe a different data structure")
 
+    def plot_uvw(self):
+        """Plot 3D UVW coverage"""
+
+        fig = plt.figure()
+        ax = fig.add_subplot(projection="3d")
+
+        ax.set_title("UVW Coverage")
+        ax.scatter(uvf.uu, uvf.vv, uvf.ww, c=uvf.r, marker="o", s=49, cmap=cmr.pride)
+
+        ax.set_xlabel("$u\,\,[m]$")
+        ax.set_ylabel("$v\,\,[m]$")
+        ax.set_zlabel("$w\,\,[m]$")
+
+        plt.tight_layout()
+        plt.show()
+
 
 if __name__ == "__main__":
 
     uvf = UVFITS(path="data/EDA2_haslam_band01.uvfits")
     uvf.get_freqs()
     uvf.get_uvw()
+    uvf.uvw_spherical()
     uvf.get_visi()
+    # uvf.plot_uvw()
 
-    # import cmasher as cmr
-    # from matplotlib import pyplot as plt
-    #
-    # plt.style.use("dark_background")
-    #
-    # fig, ax = plt.subplots()
-    # ax.hexbin(uvf.uu, uvf.vv, cmap=cmr.pride)
-    # ax.set_xlabel('UU [m]')
-    # ax.set_ylabel('VV [m]')
-    # ax.set_aspect('equal')
-    #
-    # plt.tight_layout()
-    # plt.show()
+    print(np.min(uvf.theta.to(u.deg).min()))
+    print(np.min(uvf.theta.to(u.deg).max()))
+    print(np.min(uvf.phi.to(u.deg).min()))
+    print(np.min(uvf.phi.to(u.deg).max()))
+
+    logger.info(f"Max Baseline: [{uvf.r.max():.2f}]")
+    logger.info(f"Max Frequency: [{uvf.freqs.max()}]")
+
+    max_lambda = (consts.c / uvf.freqs.max()).to(
+        u.m, equivalencies=u.dimensionless_angles()
+    )
+    logger.info(f"Max Wavelength: [{max_lambda}]")
+
+    max_res = (max_lambda / uvf.r.max()) * u.rad
+    logger.info(f"Max Resolution: [{max_res:.4f}, {max_res.to(u.deg):.2f}]")
+
+    # index l corresponds roughly to the inverse scale size in radians
+    # https://physics.stackexchange.com/questions/54124/relation-between-multipole-moment-and-angular-scale-of-cmb
+    # https://justinwillmert.com/articles/2020/notes-on-calculating-the-spherical-harmonics/
+    # https://web.physics.utah.edu/~sommers/faq/b3.html
+    max_l = int(np.ceil(np.pi / max_res.value)) * 2
+    logger.info(rf"Max 𝑙: [{max_l:.0f}]")
+
+    #####################################
+    # Equation 16
+    #####################################
+    logger.info("Computing v_lm s")
+
+    # Make l, m matrix of emplty values
+    v_lm = np.zeros((max_l + 1, 2 * max_l + 1), dtype=complex)
+
+    # Scipy has an inverse definition of theta and phi
+    # https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.sph_harm.html#scipy.special.sph_harm
+    def ylm(l, m, theta, phi):
+        return special.sph_harm(m, l, phi, theta)
+
+    # Wavenumber
+    lambdas = (consts.c / uvf.freqs.max()).to(
+        u.m, equivalencies=u.dimensionless_angles()
+    )
+    k = 2.0 * np.pi * u.rad / lambdas
+    kr = k * uvf.r
+
+    for l in tqdm(np.arange(max_l + 1), desc=r"𝑙 ", ascii=' >=', colour="#66C1A4"):
+        jl = special.spherical_jn(l, kr.value)
+        for m in tqdm(np.arange(-1 * l, l + 1), leave=False, desc=r"𝑚 ", ascii=' >=', colour="#3287BC"):
+            y_lm_conj = np.conj(ylm(l, m, uvf.theta.value, uvf.phi.value))
+            v_lm[l, l + m] = ((2.0 * (k.value**2)) / np.pi) * np.sum(
+                uvf.II.reshape(jl.shape) * jl * y_lm_conj, axis=0
+            )
+
+    #####################################
+    # Inverting Equation 11
+    #####################################
+    logger.info("Computing b_lm s")
+    b_lm = (v_lm.T / (4.0 * np.pi * ((-1j) ** np.arange(max_l + 1)))).T
+
+
+    #####################################
+    # Healpix Imaging
+    #####################################
+    logger.info("Making healpix image")
+    NSIDE = 64
+    B_map = np.zeros((hp.nside2npix(NSIDE)), dtype=complex)
+    theta, phi = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)))
+
+    for l in tqdm(np.arange(max_l + 1), desc=r"𝑙 ", ascii=' >=', colour="#66C1A4"):
+        for m in tqdm(np.arange(-1 * l, l + 1), leave=False, desc=r"𝑚 ", ascii=' >=', colour="#3287BC"):
+            B_map += b_lm[l, l+m] * ylm(l, m, theta, phi)
+
+
+    # hp.mollview(B_map.real, cmap="Spectral")
+    hp.visufunc.orthview(B_map.real, rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
+    plt.savefig('SWHT.png')
+    plt.show()
