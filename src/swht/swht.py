@@ -247,11 +247,6 @@ if __name__ == "__main__":
     uvf.get_visi()
     # uvf.plot_uvw()
 
-    print(np.min(uvf.theta.to(u.deg).min()))
-    print(np.min(uvf.theta.to(u.deg).max()))
-    print(np.min(uvf.phi.to(u.deg).min()))
-    print(np.min(uvf.phi.to(u.deg).max()))
-
     logger.info(f"Max Baseline: [{uvf.r.max():.2f}]")
     logger.info(f"Max Frequency: [{uvf.freqs.max()}]")
 
@@ -267,7 +262,7 @@ if __name__ == "__main__":
     # https://physics.stackexchange.com/questions/54124/relation-between-multipole-moment-and-angular-scale-of-cmb
     # https://justinwillmert.com/articles/2020/notes-on-calculating-the-spherical-harmonics/
     # https://web.physics.utah.edu/~sommers/faq/b3.html
-    max_l = int(np.ceil(np.pi / max_res.value)) * 2
+    max_l = int(np.ceil(np.pi / max_res.value)) * 1
     logger.info(rf"Max 𝑙: [{max_l:.0f}]")
 
     #####################################
@@ -290,13 +285,14 @@ if __name__ == "__main__":
     k = 2.0 * np.pi * u.rad / lambdas
     kr = k * uvf.r
 
-    for l in tqdm(np.arange(max_l + 1), desc=r"𝑙 ", ascii=' >=', colour="#66C1A4"):
+    for l in tqdm(np.arange(max_l + 1), desc=r"𝑙 ", ascii=' >=', colour="#66C1A4", disable=False):
         jl = special.spherical_jn(l, kr.value)
-        for m in tqdm(np.arange(-1 * l, l + 1), leave=False, desc=r"𝑚 ", ascii=' >=', colour="#3287BC"):
+        for m in tqdm(np.arange(-1 * l, l + 1), leave=False, desc=r"𝑚 ", ascii=' >=', colour="#3287BC", disable=False):
             y_lm_conj = np.conj(ylm(l, m, uvf.theta.value, uvf.phi.value))
             v_lm[l, l + m] = ((2.0 * (k.value**2)) / np.pi) * np.sum(
-                uvf.II.reshape(jl.shape) * jl * y_lm_conj, axis=0
+                    uvf.II.reshape(jl.shape) * jl * y_lm_conj, axis=0
             )
+            # print(f"l: [{l}], m: [{m}], v_lm: [{np.abs(v_lm[l, l + m]):.0f}, {np.rad2deg(np.angle(v_lm[l, l + m])):.0f}]")
 
     #####################################
     # Inverting Equation 11
@@ -309,7 +305,7 @@ if __name__ == "__main__":
     # Healpix Imaging
     #####################################
     logger.info("Making healpix image")
-    NSIDE = 64
+    NSIDE = 32 * 1
     B_map = np.zeros((hp.nside2npix(NSIDE)), dtype=complex)
     theta, phi = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)))
 
@@ -318,7 +314,37 @@ if __name__ == "__main__":
             B_map += b_lm[l, l+m] * ylm(l, m, theta, phi)
 
 
-    # hp.mollview(B_map.real, cmap="Spectral")
+    # hp.visufunc.mollview(B_map.real, cmap=cmr.pride) 
     hp.visufunc.orthview(B_map.real, rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
-    plt.savefig('SWHT.png')
-    plt.show()
+    plt.savefig("swht_real.png")
+    # plt.show()
+    plt.close()
+
+    hp.visufunc.orthview(B_map.imag, rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
+    plt.savefig("swht_imag.png")
+    # plt.show()
+    plt.close()
+
+    hp.visufunc.orthview(np.abs(B_map), rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
+    plt.savefig("swht_amp.png")
+    # plt.show()
+    plt.close()
+
+    hp.visufunc.orthview(np.angle(B_map), rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
+    plt.savefig("swht_phase.png")
+    # plt.show()
+    plt.close()
+
+
+    # alm = []
+    # # Healpy alm indexing order
+    # # https://healpy.readthedocs.io/en/latest/generated/healpy.sphtfunc.Alm.getidx.html
+    # for m in np.arange(max_l + 1):
+    #     for l in np.arange(m, max_l + 1):
+    #         # print(f"m: {m}, l:{l}, [{b_lm[l, l+m]}]")
+    #         alm.append(b_lm[l, l+m])
+    #
+    # B_map = hp.alm2map(np.asarray(alm), NSIDE)
+    # # hp.mollview(B_map, cmap="Spectral")
+    # hp.visufunc.orthview(B_map, rot=(0, 90, 90), cmap=cmr.pride, half_sky=True, bgcolor='black')
+    # plt.show()
